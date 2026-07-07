@@ -55,24 +55,32 @@ autoinstall:
     username: gummiolafs
     hostname: ubuntu
     password: "$6$rounds=656000$5dOE1Ns/he7g3InW$4zvSAVoxIvEeyg1OeVZKhXsM/DoZ0pq0.YTBo4KuUUq9F/lim7tUNUaEZTONwX9Cpsd7cPtLkvS4kcfBhUtPR1"
+  user-data:
+    users:
+      - default
+      - name: gummiolafs
+        gecos: gummiolafs
+        sudo: ALL=(ALL) NOPASSWD:ALL
+        groups: [sudo]
+        shell: /bin/bash
+        ssh_authorized_keys:
+          - "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCr7yRww4oL9IZX5mPw1iRMVJrZJq5wq7mJhrpqfHXPF33R5ykV+5pKXFvWZKMjjWZxb8KIzWK64FZFjB2U4vuSG/d2L78aKHLiCULVlCZ4HU5oOgUx6+1BYBpJGRJ44hAT198IvkXgIFXNRrSSobBzBGbVFhMvMFzJoUM3jewDd1clLOzB+ptHTtMGoc/GTxc/UoSzW1D46ebrkvyn9s6V3XmsxpCijGejnMFnpdwzFYcaFF6w6edJ8r2JeJbiQhu3tCWVaKMBxFqaeOV0bdvv1p0KW3VCBkQ0fgz6DDXAW9e2MKijl4MazTgJWxxpywA3qUP3cOMKP1eJbzkQoOg7 gummiolafs@gummiolafs.is"
+      - name: hermes
+        gecos: Hermes Agent
+        sudo: ALL=(ALL) NOPASSWD:ALL
+        groups: [sudo]
+        shell: /bin/bash
+        ssh_authorized_keys:
+          - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL/DNqdI8Rjmr8ggYRzZC5ATJht8cP6mg2QKLeldW/7D hermes@proxmox.g87.is"
+    write_files:
+      - path: /etc/ssh/sshd_config.d/99-disable-password.conf
+        content: |
+          PasswordAuthentication no
+        permissions: '0644'
+      - path: /etc/sudoers.d/99-passwordless
+        content: |
+          %sudo ALL=(ALL) NOPASSWD: ALL
+        permissions: '0440'
   late-commands:
-    - mkdir -p /target/home/gummiolafs/.ssh
-    - |
-      echo 'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCr7yRww4oL9IZX5mPw1iRMVJrZJq5wq7mJhrpqfHXPF33R5ykV+5pKXFvWZKMjjWZxb8KIzWK64FZFjB2U4vuSG/d2L78aKHLiCULVlCZ4HU5oOgUx6+1BYBpJGRJ44hAT198IvkXgIFXNRrSSobBzBGbVFhMvMFzJoUM3jewDd1clLOzB+ptHTtMGoc/GTxc/UoSzW1D46ebrkvyn9s6V3XmsxpCijGejnMFnpdwzFYcaFF6w6edJ8r2JeJbiQhu3tCWVaKMBxFqaeOV0bdvv1p0KW3VCBkQ0fgz6DDXAW9e2MKijl4MazTgJWxxpywA3qUP3cOMKP1eJbzkQoOg7 gummiolafs@gummiolafs.is' > /target/home/gummiolafs/.ssh/authorized_keys
-    - curtin in-target --target=/target -- chown -R gummiolafs:gummiolafs /home/gummiolafs/.ssh
-    - curtin in-target --target=/target -- chmod 700 /home/gummiolafs/.ssh
-    - curtin in-target --target=/target -- chmod 600 /home/gummiolafs/.ssh/authorized_keys
-    - curtin in-target --target=/target -- useradd -m -s /bin/bash -G sudo hermes
-    - mkdir -p /target/home/hermes/.ssh
-    - |
-      echo 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL/DNqdI8Rjmr8ggYRzZC5ATJht8cP6mg2QKLeldW/7D hermes@proxmox.g87.is' > /target/home/hermes/.ssh/authorized_keys
-    - curtin in-target --target=/target -- chown -R hermes:hermes /home/hermes/.ssh
-    - curtin in-target --target=/target -- chmod 700 /home/hermes/.ssh
-    - curtin in-target --target=/target -- chmod 600 /home/hermes/.ssh/authorized_keys
-    - |
-      echo 'PasswordAuthentication no' > /target/etc/ssh/sshd_config.d/99-disable-password.conf
-    - |
-      echo '%sudo ALL=(ALL) NOPASSWD: ALL' > /target/etc/sudoers.d/99-passwordless
-    - curtin in-target --target=/target -- chmod 440 /etc/sudoers.d/99-passwordless
     - curtin in-target --target=/target -- systemctl enable qemu-guest-agent || true
     - curtin in-target --target=/target -- systemctl enable ssh

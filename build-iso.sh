@@ -51,86 +51,100 @@ prepare_iso() {
     else
         local iso_url
         iso_url=$(find_latest_iso_url "${UBUNTU_VERSION}")
-        if [ -f "${OUTPUT_ISO}" ] && [ -s "${OUTPUT_ISO}" ]; then
-            info "ISO already present: ${OUTPUT_ISO}"
+        if [ -f "${SCRIPT_DIR}/ubuntu-server.iso" ] && [ -s "${SCRIPT_DIR}/ubuntu-server.iso" ]; then
+            info "ISO already present: ${SCRIPT_DIR}/ubuntu-server.iso"
+            cp "${SCRIPT_DIR}/ubuntu-server.iso" "${OUTPUT_ISO}"
         else
             info "Downloading ${iso_url}..."
-            curl -gL --progress-bar -o "${OUTPUT_ISO}" "${iso_url}"
-            if [ ! -s "${OUTPUT_ISO}" ]; then
+            curl -gL --progress-bar -o "${SCRIPT_DIR}/ubuntu-server.iso" "${iso_url}"
+            if [ ! -s "${SCRIPT_DIR}/ubuntu-server.iso" ]; then
                 error "Download failed or file is empty"
                 exit 1
             fi
+            cp "${SCRIPT_DIR}/ubuntu-server.iso" "${OUTPUT_ISO}"
             info "Download complete"
         fi
     fi
 }
 
+
 extract_and_patch_boot_configs() {
-    info "Extracting and patching boot configs..."
+    info "Extracting ISO to workspace..."
     rm -rf "${WORK_DIR}"
-    mkdir -p "${WORK_DIR}"
+    mkdir -p "${WORK_DIR}/iso"
 
-    local files_to_extract=(
-        "/boot/grub/grub.cfg:${WORK_DIR}/grub.cfg"
-        "/boot/grub/loopback.cfg:${WORK_DIR}/loopback.cfg"
-    )
+    # Extract all
+    xorriso -osirrox on -indev "${OUTPUT_ISO}" -extract / "${WORK_DIR}/iso" 2>/dev/null || true
+    chmod -R u+w "${WORK_DIR}/iso"
 
-    for mapping in "${files_to_extract[@]}"; do
-        local iso_path="${mapping%%:*}"
-        local disk_path="${mapping##*:}"
-        xorriso -osirrox on -indev "${OUTPUT_ISO}" \
-            -extract "${iso_path}" "${disk_path}" 2>/dev/null || true
-    done
+    # Setup nocloud
+    info "Setting up autoinstall configs..."
+    mkdir -p "${WORK_DIR}/iso/nocloud"
+    cp "${SCRIPT_DIR}/user-data" "${WORK_DIR}/iso/nocloud/"
+    cp "${SCRIPT_DIR}/meta-data" "${WORK_DIR}/iso/nocloud/"
+    # For subiquity safety, also place at root
+    cp "${SCRIPT_DIR}/user-data" "${WORK_DIR}/iso/"
+    cp "${SCRIPT_DIR}/meta-data" "${WORK_DIR}/iso/"
 
     # Patch GRUB configs
-    for cfg in "${WORK_DIR}/grub.cfg" "${WORK_DIR}/loopback.cfg"; do
+    for cfg in "${WORK_DIR}/iso/boot/grub/grub.cfg" "${WORK_DIR}/iso/boot/grub/loopback.cfg"; do
         if [ -f "${cfg}" ]; then
             info "  Patching $(basename "${cfg}")..."
-            perl -pi -e 's#/casper/vmlinuz#/casper/vmlinuz autoinstall ds=nocloud\\;s=/cdrom/#' "${cfg}"
+            perl -pi -e 's#(linux.*?)(\s+---\s.*|$)#$1 autoinstall ds="nocloud;s=/cdrom/nocloud/" console=ttyS0$2#' "${cfg}"
             perl -pi -e 's/set timeout=\d+/set timeout=2/' "${cfg}"
         fi
     done
 
     # Patch isolinux if present (older ISOs)
-    local txt_cfg="${WORK_DIR}/txt.cfg"
-    xorriso -osirrox on -indev "${OUTPUT_ISO}" \
-        -extract /isolinux/txt.cfg "${txt_cfg}" 2>/dev/null || true
+    local txt_cfg="${WORK_DIR}/iso/isolinux/txt.cfg"
     if [ -f "${txt_cfg}" ]; then
         info "  Patching isolinux/txt.cfg..."
-        perl -pi -e 's#(append.*)#$1 autoinstall ds=nocloud\;s=/cdrom/#' "${txt_cfg}"
+        perl -pi -e 's#(append.*)#$1 autoinstall ds="nocloud;s=/cdrom/nocloud/" console=ttyS0#' "${txt_cfg}"
     fi
 
     info "Boot configs patched"
 }
 
 modify_iso_inplace() {
-    info "Modifying ISO in-place (preserving boot configuration)..."
+    info "Packaging custom ISO..."
+    
+    local UUID
+    UUID=$(date +%Y-%m-%d-%H-%M-%S-00 | sed 's/-//g')
 
-    local xorriso_args=(
-        -dev "${OUTPUT_ISO}"
-        -boot_image any keep
-        -map "${SCRIPT_DIR}/user-data" /user-data
-        -map "${SCRIPT_DIR}/meta-data" /meta-data
-    )
-
-    if [ -f "${WORK_DIR}/grub.cfg" ]; then
-        xorriso_args+=(-map "${WORK_DIR}/grub.cfg" /boot/grub/grub.cfg)
+    # Ensure efi.img is available. If ISO extraction misses the hidden El-Torito EFI image,
+    # generate a fallback or extract it dynamically.
+    if [ ! -f "${WORK_DIR}/iso/efi.img" ]; then
+        info "Extracting hidden EFI image..."
+        local efistart
+        efistart=$(xorriso -indev "${SCRIPT_DIR}/ubuntu-server.iso" -report_el_torito as_mkisofs 2>/dev/null | grep -oE "\-e [^ ]+" | awk '{print $2}' || true)
+        if [[ "$efistart" == *"appended_partition"* ]]; then
+            # Extract UEFI Boot Partition (El Torito)
+            xorriso -osirrox on -indev "${SCRIPT_DIR}/ubuntu-server.iso" -extract_boot_images "${WORK_DIR}/iso" 2>/dev/null || true
+            # xorriso saves appended_partition_X as eltorito_imgX_fs.img
+            for img in "${WORK_DIR}/iso"/eltorito_img*.img; do
+                 if [ -f "$img" ]; then
+                      mv "$img" "${WORK_DIR}/iso/efi.img"
+                      break
+                 fi
+            done
+        fi
     fi
-    if [ -f "${WORK_DIR}/loopback.cfg" ]; then
-        xorriso_args+=(-map "${WORK_DIR}/loopback.cfg" /boot/grub/loopback.cfg)
-    fi
-    if [ -f "${WORK_DIR}/txt.cfg" ]; then
-        xorriso_args+=(-map "${WORK_DIR}/txt.cfg" /isolinux/txt.cfg)
-    fi
 
-    xorriso_args+=(-commit_eject all "")
-
-    xorriso "${xorriso_args[@]}" 2>&1 | grep -v "^xorriso :" || true
+    xorriso -as mkisofs -r \
+      -V "Ubuntu-Server26.04" \
+      -J -l -b boot/grub/i386-pc/eltorito.img \
+      -c boot.catalog \
+      -no-emul-boot -boot-load-size 4 -boot-info-table \
+      -eltorito-alt-boot \
+      -e efi.img \
+      -no-emul-boot -isohybrid-gpt-basdat -isohybrid-apm-hfsplus \
+      -o "${OUTPUT_ISO}" \
+      "${WORK_DIR}/iso" 2>/dev/null
 
     if [ -s "${OUTPUT_ISO}" ]; then
-        info "ISO modified successfully: ${OUTPUT_ISO}"
+        info "ISO packaged successfully: ${OUTPUT_ISO}"
     else
-        error "Failed to modify ISO"
+        error "Failed to package ISO"
         exit 1
     fi
 }
